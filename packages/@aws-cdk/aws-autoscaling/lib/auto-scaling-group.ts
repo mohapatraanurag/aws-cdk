@@ -353,6 +353,35 @@ export interface CommonAutoScalingGroupProps {
    * @default None
    */
   readonly defaultInstanceWarmup?: Duration;
+
+  /**
+   * Indicates whether Capacity Rebalancing is enabled. When you turn on Capacity Rebalancing, Amazon EC2 Auto Scaling
+   * attempts to launch a Spot Instance whenever Amazon EC2 notifies that a Spot Instance is at an elevated risk of
+   * interruption. After launching a new instance, it then terminates an old instance.
+   *
+   * @see https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-as-group.html#cfn-as-group-capacityrebalance
+   *
+   * @default false
+   *
+   */
+  readonly capacityRebalance?: boolean;
+
+  /**
+   * Add SSM session permissions to the instance role
+   *
+   * Setting this to `true` adds the necessary permissions to connect
+   * to the instance using SSM Session Manager. You can do this
+   * from the AWS Console.
+   *
+   * NOTE: Setting this flag to `true` may not be enough by itself.
+   * You must also use an AMI that comes with the SSM Agent, or install
+   * the SSM Agent yourself. See
+   * [Working with SSM Agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent.html)
+   * in the SSM Developer Guide.
+   *
+   * @default false
+   */
+  readonly ssmSessionPermissions?: boolean;
 }
 
 /**
@@ -985,6 +1014,7 @@ abstract class AutoScalingGroupBase extends Resource implements IAutoScalingGrou
   public abstract readonly osType: ec2.OperatingSystemType;
   protected albTargetGroup?: elbv2.ApplicationTargetGroup;
   public readonly grantPrincipal: iam.IPrincipal = new iam.UnknownPrincipal({ resource: this });
+  protected hasCalledScaleOnRequestCount: boolean = false;
 
   /**
    * Send a message to either an SQS queue or SNS topic when instances launch or terminate
@@ -1088,6 +1118,7 @@ abstract class AutoScalingGroupBase extends Resource implements IAutoScalingGrou
     });
 
     policy.node.addDependency(this.albTargetGroup.loadBalancerAttached);
+    this.hasCalledScaleOnRequestCount = true;
     return policy;
   }
 
@@ -1264,6 +1295,10 @@ export class AutoScalingGroup extends AutoScalingGroupBase implements
 
       this.grantPrincipal = this._role;
 
+      if (props.ssmSessionPermissions) {
+        this.role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'));
+      }
+
       const iamProfile = new iam.CfnInstanceProfile(this, 'InstanceProfile', {
         roles: [this.role.roleName],
       });
@@ -1362,6 +1397,7 @@ export class AutoScalingGroup extends AutoScalingGroupBase implements
       newInstancesProtectedFromScaleIn: Lazy.any({ produce: () => this.newInstancesProtectedFromScaleIn }),
       terminationPolicies: props.terminationPolicies,
       defaultInstanceWarmup: props.defaultInstanceWarmup?.toSeconds(),
+      capacityRebalance: props.capacityRebalance,
       ...this.getLaunchSettings(launchConfig, props.launchTemplate, props.mixedInstancesPolicy),
     };
 
@@ -1388,6 +1424,8 @@ export class AutoScalingGroup extends AutoScalingGroupBase implements
     if (props.requireImdsv2) {
       Aspects.of(this).add(new AutoScalingGroupRequireImdsv2Aspect());
     }
+
+    this.node.addValidation({ validate: () => this.validateTargetGroup() });
   }
 
   /**
@@ -1415,10 +1453,6 @@ export class AutoScalingGroup extends AutoScalingGroupBase implements
    * Attach to ELBv2 Application Target Group
    */
   public attachToApplicationTargetGroup(targetGroup: elbv2.IApplicationTargetGroup): elbv2.LoadBalancerTargetProps {
-    if (this.albTargetGroup !== undefined) {
-      throw new Error('Cannot add AutoScalingGroup to 2nd Target Group');
-    }
-
     this.targetGroupArns.push(targetGroup.targetGroupArn);
     if (targetGroup instanceof elbv2.ApplicationTargetGroup) {
       // Copy onto self if it's a concrete type. We need this for autoscaling
@@ -1764,6 +1798,16 @@ export class AutoScalingGroup extends AutoScalingGroupBase implements
         version: launchTemplate.versionNumber,
       };
     }
+  }
+
+
+  private validateTargetGroup(): string[] {
+    const errors = new Array<string>();
+    if (this.hasCalledScaleOnRequestCount && this.targetGroupArns.length > 1) {
+      errors.push('Cannon use multiple target groups if `scaleOnRequestCount()` is being used.');
+    }
+
+    return errors;
   }
 }
 

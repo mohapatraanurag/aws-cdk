@@ -70,7 +70,9 @@ new apprunner.Service(this, 'Service', {
 });
 ```
 
-To create a `Service` from local docker image asset directory  built and pushed to Amazon ECR:
+To create a `Service` from local docker image asset directory built and pushed to Amazon ECR:
+
+You can specify whether to enable continuous integration from the source repository with the `autoDeploymentsEnabled` flag.
 
 ```ts
 import * as assets from '@aws-cdk/aws-ecr-assets';
@@ -83,6 +85,7 @@ new apprunner.Service(this, 'Service', {
     imageConfiguration: { port: 8000 },
     asset: imageAsset,
   }),
+  autoDeploymentsEnabled: true,
 });
 ```
 
@@ -159,4 +162,40 @@ new apprunner.Service(this, 'Service', {
   }),
   vpcConnector,
 });
+```
+
+## Secrets Manager
+
+To include environment variables integrated with AWS Secrets Manager, use the `environmentSecrets` attribute.
+You can use the `addSecret` method from the App Runner `Service` class to include secrets from outside the 
+service definition.
+
+```ts
+import * as secretsmanager from '@aws-cdk/aws-secretsmanager';
+import * as ssm from '@aws-cdk/aws-ssm';
+
+declare const stack: Stack;
+
+const secret = new secretsmanager.Secret(stack, 'Secret');
+const parameter = ssm.StringParameter.fromSecureStringParameterAttributes(stack, 'Parameter', {
+  parameterName: '/name',
+  version: 1,
+});
+
+const service = new apprunner.Service(stack, 'Service', {
+  source: apprunner.Source.fromEcrPublic({
+    imageConfiguration: {
+      port: 8000,
+      environmentSecrets: {
+        SECRET: apprunner.Secret.fromSecretsManager(secret),
+        PARAMETER: apprunner.Secret.fromSsmParameter(parameter),
+        SECRET_ID: apprunner.Secret.fromSecretsManagerVersion(secret, { versionId: 'version-id' }),
+        SECRET_STAGE: apprunner.Secret.fromSecretsManagerVersion(secret, { versionStage: 'version-stage' }),
+      },
+    },
+    imageIdentifier: 'public.ecr.aws/aws-containers/hello-app-runner:latest',
+  })
+});
+
+service.addSecret('LATER_SECRET', apprunner.Secret.fromSecretsManager(secret, 'field'));
 ```

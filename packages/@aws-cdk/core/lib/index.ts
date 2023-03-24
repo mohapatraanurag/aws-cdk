@@ -34,6 +34,7 @@ export * from './duration';
 export * from './expiration';
 export * from './size';
 export * from './stack-trace';
+export { Element } from './deps';
 
 export * from './app';
 export * from './context-provider';
@@ -67,3 +68,4 @@ export * from './permissions-boundary';
 // class description for more information.
 export * from './private/intrinsic';
 export * from './names';
+export * from './time-zone';

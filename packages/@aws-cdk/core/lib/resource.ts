@@ -16,7 +16,7 @@ const RESOURCE_SYMBOL = Symbol.for('@aws-cdk/core.Resource');
 
 /**
  * Represents the environment a given resource lives in.
- * Used as the return value for the {@link IResource.env} property.
+ * Used as the return value for the `IResource.env` property.
  */
 export interface ResourceEnvironment {
   /**
@@ -73,7 +73,7 @@ export interface IResource extends IConstruct {
 }
 
 /**
- * Construction properties for {@link Resource}.
+ * Construction properties for `Resource`.
  */
 export interface ResourceProps {
   /**
@@ -321,7 +321,7 @@ function mimicReference(refSource: any, producer: IStringProducer): string {
   }
 
   return Token.asString(new class extends Reference {
-    resolve(context: IResolveContext) {
+    public resolve(context: IResolveContext) {
       return producer.produce(context);
     }
   }(reference, reference.target, reference.displayName));

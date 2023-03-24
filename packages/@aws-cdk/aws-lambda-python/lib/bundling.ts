@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { Architecture, AssetCode, Code, Runtime } from '@aws-cdk/aws-lambda';
-import { AssetStaging, BundlingOptions as CdkBundlingOptions, DockerImage } from '@aws-cdk/core';
+import { AssetStaging, BundlingFileAccess, BundlingOptions as CdkBundlingOptions, DockerImage, DockerVolume } from '@aws-cdk/core';
 import { Packaging, DependenciesFile } from './packaging';
 import { BundlingOptions, ICommandHooks } from './types';
 
@@ -41,6 +41,12 @@ export interface BundlingProps extends BundlingOptions {
    * @default - Does not skip bundling
    */
   readonly skip?: boolean;
+
+  /**
+   * Which option to use to copy the source files to the docker container and output files back
+   * @default - BundlingFileAccess.BIND_MOUNT
+   */
+  bundlingFileAccess?: BundlingFileAccess
 }
 
 /**
@@ -57,8 +63,16 @@ export class Bundling implements CdkBundlingOptions {
   }
 
   public readonly image: DockerImage;
+  public readonly entrypoint?: string[]
   public readonly command: string[];
+  public readonly volumes?: DockerVolume[];
+  public readonly volumesFrom?: string[];
   public readonly environment?: { [key: string]: string };
+  public readonly workingDirectory?: string;
+  public readonly user?: string;
+  public readonly securityOpt?: string;
+  public readonly network?: string;
+  public readonly bundlingFileAccess?: BundlingFileAccess;
 
   constructor(props: BundlingProps) {
     const {
@@ -69,6 +83,7 @@ export class Bundling implements CdkBundlingOptions {
       image,
       poetryIncludeHashes,
       commandHooks,
+      assetExcludes = [],
     } = props;
 
     const outputPath = path.posix.join(AssetStaging.BUNDLING_OUTPUT_DIR, outputPathSuffix);
@@ -79,6 +94,7 @@ export class Bundling implements CdkBundlingOptions {
       outputDir: outputPath,
       poetryIncludeHashes,
       commandHooks,
+      assetExcludes,
     });
 
     this.image = image ?? DockerImage.fromBuild(path.join(__dirname, '../lib'), {
@@ -88,15 +104,26 @@ export class Bundling implements CdkBundlingOptions {
       },
       platform: architecture.dockerPlatform,
     });
-    this.command = ['bash', '-c', chain(bundlingCommands)];
+    this.command = props.command ?? ['bash', '-c', chain(bundlingCommands)];
+    this.entrypoint = props.entrypoint;
+    this.volumes = props.volumes;
+    this.volumesFrom = props.volumesFrom;
     this.environment = props.environment;
+    this.workingDirectory = props.workingDirectory;
+    this.user = props.user;
+    this.securityOpt = props.securityOpt;
+    this.network = props.network;
+    this.bundlingFileAccess = props.bundlingFileAccess;
   }
 
   private createBundlingCommand(options: BundlingCommandOptions): string[] {
     const packaging = Packaging.fromEntry(options.entry, options.poetryIncludeHashes);
     let bundlingCommands: string[] = [];
     bundlingCommands.push(...options.commandHooks?.beforeBundling(options.inputDir, options.outputDir) ?? []);
-    bundlingCommands.push(`cp -rTL ${options.inputDir}/ ${options.outputDir}`);
+    const exclusionStr = options.assetExcludes?.map(item => `--exclude='${item}'`).join(' ');
+    bundlingCommands.push([
+      'rsync', '-rLv', exclusionStr ?? '', `${options.inputDir}/`, options.outputDir,
+    ].filter(item => item).join(' '));
     bundlingCommands.push(`cd ${options.outputDir}`);
     bundlingCommands.push(packaging.exportCommand ?? '');
     if (packaging.dependenciesFile) {
@@ -111,8 +138,9 @@ interface BundlingCommandOptions {
   readonly entry: string;
   readonly inputDir: string;
   readonly outputDir: string;
+  readonly assetExcludes?: string[];
   readonly poetryIncludeHashes?: boolean;
-  readonly commandHooks?: ICommandHooks
+  readonly commandHooks?: ICommandHooks;
 }
 
 /**

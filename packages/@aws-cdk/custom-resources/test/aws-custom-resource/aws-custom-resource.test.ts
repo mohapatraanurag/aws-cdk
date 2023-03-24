@@ -3,6 +3,7 @@ import * as ec2 from '@aws-cdk/aws-ec2';
 import * as iam from '@aws-cdk/aws-iam';
 import * as logs from '@aws-cdk/aws-logs';
 import * as cdk from '@aws-cdk/core';
+import { App, Stack } from '@aws-cdk/core';
 import { AwsCustomResource, AwsCustomResourcePolicy, PhysicalResourceId, PhysicalResourceIdReference } from '../../lib';
 
 /* eslint-disable quote-props */
@@ -170,20 +171,312 @@ test('fails when no calls are specified', () => {
   })).toThrow(/`onCreate`.+`onUpdate`.+`onDelete`/);
 });
 
-test('fails when no physical resource method is specified', () => {
-  const stack = new cdk.Stack();
+// test patterns for physicalResourceId
+// | # |    onCreate.physicalResourceId    |   onUpdate.physicalResourceId    | Error thrown? |
+// |---|-----------------------------------|----------------------------------|---------------|
+// | 1 | ANY_VALUE                         | ANY_VALUE                        | no            |
+// | 2 | ANY_VALUE                         | undefined                        | no            |
+// | 3 | undefined                         | ANY_VALLUE                       | yes           |
+// | 4 | undefined                         | undefined                        | yes           |
+// | 5 | ANY_VALUE                         | undefined (*omit whole onUpdate) | no            |
+// | 6 | undefined                         | undefined (*omit whole onUpdate) | yes           |
+// | 7 | ANY_VALUE (*copied from onUpdate) | ANY_VALUE                        | no            |
+// | 8 | undefined (*copied from onUpdate) | undefined                        | yes           |
+describe('physicalResourceId patterns', () => {
+  // physicalResourceId pattern #1
+  test('physicalResourceId is specified both in onCreate and onUpdate then success', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
 
-  expect(() => new AwsCustomResource(stack, 'AwsSdk', {
-    onUpdate: {
-      service: 'CloudWatchLogs',
-      action: 'putRetentionPolicy',
-      parameters: {
-        logGroupName: '/aws/lambda/loggroup',
-        retentionInDays: 90,
+    // WHEN
+    new AwsCustomResource(stack, 'AwsSdk', {
+      resourceType: 'Custom::AthenaNotebook',
+      onCreate: {
+        service: 'Athena',
+        action: 'createNotebook',
+        physicalResourceId: PhysicalResourceId.of('id'),
+        parameters: {
+          WorkGroup: 'WorkGroupA',
+          Name: 'Notebook1',
+        },
       },
-    },
-    policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
-  })).toThrow(/`physicalResourceId`/);
+      onUpdate: {
+        service: 'Athena',
+        action: 'updateNotebookMetadata',
+        physicalResourceId: PhysicalResourceId.of('id'),
+        parameters: {
+          Name: 'Notebook1',
+          NotebookId: new PhysicalResourceIdReference(),
+        },
+      },
+      policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('Custom::AthenaNotebook', {
+      Create: JSON.stringify({
+        service: 'Athena',
+        action: 'createNotebook',
+        physicalResourceId: {
+          id: 'id',
+        },
+        parameters: {
+          WorkGroup: 'WorkGroupA',
+          Name: 'Notebook1',
+        },
+      }),
+      Update: JSON.stringify({
+        service: 'Athena',
+        action: 'updateNotebookMetadata',
+        physicalResourceId: {
+          id: 'id',
+        },
+        parameters: {
+          Name: 'Notebook1',
+          NotebookId: 'PHYSICAL:RESOURCEID:',
+        },
+      }),
+    });
+  });
+
+  // physicalResourceId pattern #2
+  test('physicalResourceId is specified in onCreate, is not in onUpdate then absent', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    new AwsCustomResource(stack, 'AwsSdk', {
+      resourceType: 'Custom::AthenaNotebook',
+      onCreate: {
+        service: 'Athena',
+        action: 'createNotebook',
+        physicalResourceId: PhysicalResourceId.fromResponse('NotebookId'),
+        parameters: {
+          WorkGroup: 'WorkGroupA',
+          Name: 'Notebook1',
+        },
+      },
+      onUpdate: {
+        service: 'Athena',
+        action: 'updateNotebookMetadata',
+        parameters: {
+          Name: 'Notebook1',
+          NotebookId: new PhysicalResourceIdReference(),
+        },
+      },
+      policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('Custom::AthenaNotebook', {
+      Create: JSON.stringify({
+        service: 'Athena',
+        action: 'createNotebook',
+        physicalResourceId: {
+          responsePath: 'NotebookId',
+        },
+        parameters: {
+          WorkGroup: 'WorkGroupA',
+          Name: 'Notebook1',
+        },
+      }),
+      Update: JSON.stringify({
+        service: 'Athena',
+        action: 'updateNotebookMetadata',
+        parameters: {
+          Name: 'Notebook1',
+          NotebookId: 'PHYSICAL:RESOURCEID:',
+        },
+      }),
+    });
+  });
+
+  // physicalResourceId pattern #3
+  test('physicalResourceId is not specified in onCreate but onUpdate then fail', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    expect(() => {
+      new AwsCustomResource(stack, 'AwsSdk', {
+        resourceType: 'Custom::AthenaNotebook',
+        onCreate: {
+          service: 'Athena',
+          action: 'createNotebook',
+          parameters: {
+            WorkGroup: 'WorkGroupA',
+            Name: 'Notebook1',
+          },
+        },
+        onUpdate: {
+          service: 'Athena',
+          action: 'updateNotebookMetadata',
+          physicalResourceId: PhysicalResourceId.of('id'),
+          parameters: {
+            Name: 'Notebook1',
+            NotebookId: new PhysicalResourceIdReference(),
+          },
+        },
+        policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+      });
+    }).toThrow(/'physicalResourceId' must be specified for 'onCreate' call./);
+  });
+
+  // physicalResourceId pattern #4
+  test('physicalResourceId is not specified both in onCreate and onUpdate then fail', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    expect(() => {
+      new AwsCustomResource(stack, 'AwsSdk', {
+        resourceType: 'Custom::AthenaNotebook',
+        onCreate: {
+          service: 'Athena',
+          action: 'createNotebook',
+          parameters: {
+            WorkGroup: 'WorkGroupA',
+            Name: 'Notebook1',
+          },
+        },
+        onUpdate: {
+          service: 'Athena',
+          action: 'updateNotebookMetadata',
+          parameters: {
+            Name: 'Notebook1',
+            NotebookId: new PhysicalResourceIdReference(),
+          },
+        },
+        policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+      });
+    }).toThrow(/'physicalResourceId' must be specified for 'onCreate' call./);
+  });
+
+  // physicalResourceId pattern #5
+  test('physicalResourceId is specified in onCreate with empty onUpdate then success', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    new AwsCustomResource(stack, 'AwsSdk', {
+      resourceType: 'Custom::AthenaNotebook',
+      onCreate: {
+        service: 'Athena',
+        action: 'createNotebook',
+        physicalResourceId: PhysicalResourceId.of('id'),
+        parameters: {
+          WorkGroup: 'WorkGroupA',
+          Name: 'Notebook1',
+        },
+      },
+      policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('Custom::AthenaNotebook', {
+      Create: JSON.stringify({
+        service: 'Athena',
+        action: 'createNotebook',
+        physicalResourceId: {
+          id: 'id',
+        },
+        parameters: {
+          WorkGroup: 'WorkGroupA',
+          Name: 'Notebook1',
+        },
+      }),
+    });
+  });
+
+  // physicalResourceId pattern #6
+  test('physicalResourceId is not specified onCreate with empty onUpdate then fail', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    expect(() => {
+      new AwsCustomResource(stack, 'AwsSdk', {
+        resourceType: 'Custom::AthenaNotebook',
+        onCreate: {
+          service: 'Athena',
+          action: 'createNotebook',
+          parameters: {
+            WorkGroup: 'WorkGroupA',
+            Name: 'Notebook1',
+          },
+        },
+        policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+      });
+    }).toThrow(/'physicalResourceId' must be specified for 'onCreate' call./);
+  });
+
+  // physicalResourceId pattern #7
+  test('onCreate and onUpdate both have physicalResourceId when physicalResourceId is specified in onUpdate, even when onCreate is unspecified', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    new AwsCustomResource(stack, 'AwsSdk', {
+      resourceType: 'Custom::AthenaNotebook',
+      onUpdate: {
+        service: 'Athena',
+        action: 'updateNotebookMetadata',
+        physicalResourceId: PhysicalResourceId.of('id'),
+        parameters: {
+          Name: 'Notebook1',
+          NotebookId: 'XXXX',
+        },
+      },
+      policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+    });
+
+    Template.fromStack(stack).hasResourceProperties('Custom::AthenaNotebook', {
+      Create: JSON.stringify({
+        service: 'Athena',
+        action: 'updateNotebookMetadata',
+        physicalResourceId: {
+          id: 'id',
+        },
+        parameters: {
+          Name: 'Notebook1',
+          NotebookId: 'XXXX',
+        },
+      }),
+      Update: JSON.stringify({
+        service: 'Athena',
+        action: 'updateNotebookMetadata',
+        physicalResourceId: {
+          id: 'id',
+        },
+        parameters: {
+          Name: 'Notebook1',
+          NotebookId: 'XXXX',
+        },
+      }),
+    });
+  });
+
+  // physicalResourceId pattern #8
+  test('Omitting physicalResourceId in onCreate when onUpdate is undefined throws an error', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    expect(() => {
+      new AwsCustomResource(stack, 'AwsSdk', {
+        resourceType: 'Custom::AthenaNotebook',
+        onUpdate: {
+          service: 'Athena',
+          action: 'updateNotebookMetadata',
+          parameters: {
+            Name: 'Notebook1',
+            NotebookId: 'XXXX',
+          },
+        },
+        policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+      });
+    }).toThrow(/'physicalResourceId' must be specified for 'onUpdate' call when 'onCreate' is omitted./);
+  });
 });
 
 test('booleans are encoded in the stringified parameters object', () => {
@@ -910,4 +1203,38 @@ test('vpcSubnets without vpc results in an error', () => {
     policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
     vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
   })).toThrow('Cannot configure \'vpcSubnets\' without configuring a VPC');
+});
+
+test.each([
+  [undefined, true],
+  [true, true],
+  [false, false],
+])('feature flag %p, installLatestAwsSdk %p', (flag, expected) => {
+  // GIVEN
+  const app = new App({
+    context: {
+      '@aws-cdk/customresources:installLatestAwsSdkDefault': flag,
+    },
+  });
+  const stack = new Stack(app, 'Stack');
+
+  // WHEN
+  new AwsCustomResource(stack, 'AwsSdk', {
+    resourceType: 'Custom::LogRetentionPolicy',
+    onCreate: {
+      service: 'CloudWatchLogs',
+      action: 'putRetentionPolicy',
+      parameters: {
+        logGroupName: '/aws/lambda/loggroup',
+        retentionInDays: 90,
+      },
+      physicalResourceId: PhysicalResourceId.of('loggroup'),
+    },
+    policy: AwsCustomResourcePolicy.fromSdkCalls({ resources: AwsCustomResourcePolicy.ANY_RESOURCE }),
+  });
+
+  // THEN
+  Template.fromStack(stack).hasResourceProperties('Custom::LogRetentionPolicy', {
+    'InstallLatestAwsSdk': expected,
+  });
 });

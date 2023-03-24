@@ -22,6 +22,7 @@ import {
   Operation,
   CfnTable,
 } from '../lib';
+import { ReplicaProvider } from '../lib/replica-provider';
 
 jest.mock('@aws-cdk/custom-resources');
 
@@ -563,6 +564,66 @@ test('if an encryption key is included, encrypt/decrypt permissions are added to
           ],
         },
       }]),
+    },
+  });
+});
+
+test('replica-handler permission check', () => {
+  // GIVEN
+  const app = new App();
+  const stack = new Stack(app, 'Stack');
+
+  // WHEN
+  const provider = ReplicaProvider.getOrCreate(stack, {
+    tableName: 'test',
+    regions: ['eu-central-1', 'eu-west-1'],
+  });
+
+  // THEN
+  Template.fromStack(provider).hasResourceProperties('AWS::IAM::Policy', {
+    'PolicyDocument': {
+      'Statement': [
+        {
+          'Action': 'iam:CreateServiceLinkedRole',
+          'Effect': 'Allow',
+          'Resource': {
+            'Fn::Join': [
+              '',
+              [
+                'arn:',
+                {
+                  Ref: 'AWS::Partition',
+                },
+                ':iam::',
+                {
+                  Ref: 'AWS::AccountId',
+                },
+                ':role/aws-service-role/replication.dynamodb.amazonaws.com/AWSServiceRoleForDynamoDBReplication',
+              ],
+            ],
+          },
+        },
+        {
+          'Action': 'dynamodb:DescribeLimits',
+          'Effect': 'Allow',
+          'Resource': '*',
+        },
+        {
+          'Action': [
+            'dynamodb:DeleteTable',
+            'dynamodb:DeleteTableReplica',
+          ],
+          'Effect': 'Allow',
+          'Resource': [
+            {
+              'Fn::Join': ['', ['arn:aws:dynamodb:eu-central-1:', { Ref: 'AWS::AccountId' }, ':table/test']],
+            },
+            {
+              'Fn::Join': ['', ['arn:aws:dynamodb:eu-west-1:', { Ref: 'AWS::AccountId' }, ':table/test']],
+            },
+          ],
+        },
+      ],
     },
   });
 });
@@ -2264,6 +2325,60 @@ describe('import', () => {
       });
     });
 
+    test('if an encryption key is included, encrypt/decrypt permissions are added to the principal for grantStreamRead', () => {
+      const stack = new Stack();
+
+      const tableName = 'MyTable';
+      const tableStreamArn = 'arn:foo:bar:baz:TrustMeThisIsATableStream';
+      const encryptionKey = new kms.Key(stack, 'Key', {
+        enableKeyRotation: true,
+      });
+
+      const table = Table.fromTableAttributes(stack, 'ImportedTable', { tableName, tableStreamArn, encryptionKey });
+
+      const role = new iam.Role(stack, 'NewRole', {
+        assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      });
+
+      expect(table.grantStreamRead(role)).toBeDefined();
+
+      Template.fromStack(stack).hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: {
+          Statement: [
+            {
+              'Action': 'dynamodb:ListStreams',
+              'Effect': 'Allow',
+              'Resource': '*',
+            },
+            {
+              'Action': [
+                'kms:Decrypt',
+                'kms:DescribeKey',
+              ],
+              'Effect': 'Allow',
+              'Resource': {
+                'Fn::GetAtt': [
+                  'Key961B73FD',
+                  'Arn',
+                ],
+              },
+            },
+            {
+              'Action': [
+                'dynamodb:DescribeStream',
+                'dynamodb:GetRecords',
+                'dynamodb:GetShardIterator',
+              ],
+              'Effect': 'Allow',
+              'Resource': 'arn:foo:bar:baz:TrustMeThisIsATableStream',
+            },
+          ],
+          Version: '2012-10-17',
+        },
+        Roles: [stack.resolve(role.roleName)],
+      });
+    });
+
     test('creates the correct index grant if indexes have been provided when importing', () => {
       const stack = new Stack();
 
@@ -3140,3 +3255,46 @@ function testGrant(expectedActions: string[], invocation: (user: iam.IPrincipal,
     ],
   });
 }
+
+describe('deletionProtectionEnabled', () => {
+  test.each([
+    [true],
+    [false],
+  ])('gets passed to table', (state) => {
+    // GIVEN
+    const stack = new Stack();
+
+    // WHEN
+    new Table(stack, 'Table', {
+      partitionKey: {
+        name: 'id',
+        type: AttributeType.STRING,
+      },
+      deletionProtection: state,
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('AWS::DynamoDB::Table', {
+      DeletionProtectionEnabled: state,
+    });
+  });
+
+  test('is not passed when not set', () => {
+    // GIVEN
+    const stack = new Stack();
+
+    // WHEN
+    new Table(stack, 'Table', {
+      partitionKey: {
+        name: 'id',
+        type: AttributeType.STRING,
+      },
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('AWS::DynamoDB::Table', Match.objectLike({
+      DeletionProtectionEnabled: Match.absent(),
+    }));
+  });
+});
+

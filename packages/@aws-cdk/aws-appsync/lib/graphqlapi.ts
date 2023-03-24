@@ -518,7 +518,7 @@ export class GraphqlApi extends GraphqlApiBase {
         apiId: this.apiId,
       });
 
-      domainNameAssociation.addDependsOn(this.domainNameResource);
+      domainNameAssociation.addDependency(this.domainNameResource);
     }
 
     if (modes.some((mode) => mode.authorizationType === AuthorizationType.API_KEY)) {
@@ -526,7 +526,7 @@ export class GraphqlApi extends GraphqlApiBase {
         return mode.authorizationType === AuthorizationType.API_KEY && mode.apiKeyConfig;
       })?.apiKeyConfig;
       this.apiKeyResource = this.createAPIKey(config);
-      this.apiKeyResource.addDependsOn(this.schemaResource);
+      this.apiKeyResource.addDependency(this.schemaResource);
       this.apiKey = this.apiKeyResource.attrApiKey;
     }
 
@@ -534,7 +534,7 @@ export class GraphqlApi extends GraphqlApiBase {
       const config = modes.find((mode: AuthorizationMode) => {
         return mode.authorizationType === AuthorizationType.LAMBDA && mode.lambdaAuthorizerConfig;
       })?.lambdaAuthorizerConfig;
-      config?.handler.addPermission('appsync', {
+      config?.handler.addPermission(`${id}-appsync`, {
         principal: new ServicePrincipal('appsync.amazonaws.com'),
         action: 'lambda:InvokeFunction',
       });
@@ -631,7 +631,7 @@ export class GraphqlApi extends GraphqlApiBase {
    * @param construct the dependee
    */
   public addSchemaDependency(construct: CfnResource): boolean {
-    construct.addDependsOn(this.schemaResource);
+    construct.addDependency(this.schemaResource);
     return true;
   }
 

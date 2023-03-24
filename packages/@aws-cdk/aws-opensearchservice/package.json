@@ -4,6 +4,13 @@
   "description": "The CDK Construct Library for AWS::OpenSearchService",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "typesVersions": {
+    "<=3.9": {
+      "*": [
+        ".types-compat/ts3.9/*"
+      ]
+    }
+  },
   "jsii": {
     "outdir": "dist",
     "projectReferences": true,
@@ -91,7 +98,8 @@
     "@aws-cdk/pkglint": "0.0.0",
     "@aws-cdk/integ-tests": "0.0.0",
     "@aws-cdk/aws-cognito": "0.0.0",
-    "@types/jest": "^27.5.2"
+    "@types/jest": "^27.5.2",
+    "jest-each": "^27.5.1"
   },
   "dependencies": {
     "@aws-cdk/aws-certificatemanager": "0.0.0",

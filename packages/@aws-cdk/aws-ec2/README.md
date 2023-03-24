@@ -527,6 +527,32 @@ const vpc = ec2.Vpc.fromVpcAttributes(this, 'VPC', {
 });
 ```
 
+For each subnet group the import function accepts optional parameters for subnet
+names, route table ids and IPv4 CIDR blocks. When supplied, the length of these
+lists are required to match the length of the list of subnet ids, allowing the
+lists to be zipped together to form `ISubnet` instances.
+
+Public subnet group example (for private or isolated subnet groups, use the properties with the respective prefix):
+
+```ts
+const vpc = ec2.Vpc.fromVpcAttributes(this, 'VPC', {
+  vpcId: 'vpc-1234',
+  availabilityZones: ['us-east-1a', 'us-east-1b', 'us-east-1c'],
+  publicSubnetIds: ['s-12345', 's-34567', 's-56789'],
+  publicSubnetNames: ['Subnet A', 'Subnet B', 'Subnet C'],
+  publicSubnetRouteTableIds: ['rt-12345', 'rt-34567', 'rt-56789'],
+  publicSubnetIpv4CidrBlocks: ['10.0.0.0/24', '10.0.1.0/24', '10.0.2.0/24'],
+});
+```
+
+The above example will create an `IVpc` instance with three public subnets:
+
+| Subnet id | Availability zone | Subnet name | Route table id | IPv4 CIDR   |
+| --------- | ----------------- | ----------- | -------------- | ----------- |
+| s-12345   | us-east-1a        | Subnet A    | rt-12345       | 10.0.0.0/24 |
+| s-34567   | us-east-1b        | Subnet B    | rt-34567       | 10.0.1.0/24 |
+| s-56789   | us-east-1c        | Subnet B    | rt-56789       | 10.0.2.0/24 |
+
 ## Allowing Connections
 
 In AWS, all network traffic in and out of **Elastic Network Interfaces** (ENIs)
@@ -762,7 +788,7 @@ AMIs control the OS that gets launched when you start your EC2 instance. The EC2
 library contains constructs to select the AMI you want to use.
 
 Depending on the type of AMI, you select it a different way. Here are some
-examples of things you might want to use:
+examples of images you might want to use:
 
 [example of creating images](test/example.images.lit.ts)
 
@@ -1013,27 +1039,27 @@ care of restarting your instance if it ever fails.
 declare const vpc: ec2.Vpc;
 declare const instanceType: ec2.InstanceType;
 
-// AWS Linux
+// Amazon Linux 1
 new ec2.Instance(this, 'Instance1', {
   vpc,
   instanceType,
-  machineImage: new ec2.AmazonLinuxImage(),
+  machineImage: ec2.MachineImage.latestAmazonLinux(),
 });
 
-// AWS Linux 2
+// Amazon Linux 2
 new ec2.Instance(this, 'Instance2', {
   vpc,
   instanceType,
-  machineImage: new ec2.AmazonLinuxImage({
+  machineImage: ec2.MachineImage.latestAmazonLinux({
     generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2,
   }),
 });
 
-// AWS Linux 2 with kernel 5.x
+// Amazon Linux 2 with kernel 5.x
 new ec2.Instance(this, 'Instance3', {
   vpc,
   instanceType,
-  machineImage: new ec2.AmazonLinuxImage({
+  machineImage: ec2.MachineImage.latestAmazonLinux({
     generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2,
     kernel: ec2.AmazonLinuxKernel.KERNEL5_X,
   }),
@@ -1043,7 +1069,7 @@ new ec2.Instance(this, 'Instance3', {
 new ec2.Instance(this, 'Instance4', {
   vpc,
   instanceType,
-  machineImage: new ec2.AmazonLinuxImage({
+  machineImage: ec2.MachineImage.latestAmazonLinux({
     generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2022,
   }),
 });
@@ -1052,7 +1078,7 @@ new ec2.Instance(this, 'Instance4', {
 new ec2.Instance(this, 'Instance5', {
   vpc,
   instanceType: ec2.InstanceType.of(ec2.InstanceClass.C7G, ec2.InstanceSize.LARGE),
-  machineImage: new ec2.AmazonLinuxImage({
+  machineImage: ec2.MachineImage.latestAmazonLinux({
     generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2,
     cpuType: ec2.AmazonLinuxCpuType.ARM_64,
   }),
@@ -1122,6 +1148,48 @@ new ec2.Instance(this, 'Instance', {
     // Optional, whether to include the --role argument when running cfn-init and cfn-signal commands (false by default)
     includeRole: true,
   },
+});
+```
+
+`InitCommand` can not be used to start long-running processes. At deploy time,
+`cfn-init` will always wait for the process to exit before continuing, causing
+the CloudFormation deployment to fail because the signal hasn't been received
+within the expected timeout.
+
+Instead, you should install a service configuration file onto your machine `InitFile`,
+and then use `InitService` to start it.
+
+If your Linux OS is using SystemD (like Amazon Linux 2 or higher), the CDK has
+helpers to create a long-running service using CFN Init. You can create a
+SystemD-compatible config file using `InitService.systemdConfigFile()`, and
+start it immediately. The following examples shows how to start a trivial Python
+3 web server:
+
+```ts
+declare const vpc: ec2.Vpc;
+declare const instanceType: ec2.InstanceType;
+
+new ec2.Instance(this, 'Instance', {
+  vpc,
+  instanceType,
+  machineImage: ec2.MachineImage.latestAmazonLinux({
+    // Amazon Linux 2 uses SystemD
+    generation: ec2.AmazonLinuxGeneration: AMAZON_LINUX_2,
+  }),
+
+  init: ec2.CloudFormationInit.fromElements([
+    // Create a simple config file that runs a Python web server
+    ec2.InitService.systemdConfigFile('simpleserver', {
+      command: '/usr/bin/python3 -m http.server 8080',
+      cwd: '/var/www/html',
+    }),
+    // Start the server using SystemD
+    ec2.InitService.enable('simpleserver', {
+      serviceManager: ec2.ServiceManager.SYSTEMD,
+    }),
+    // Drop an example file to show the web server working
+    ec2.InitFile.fromString('/var/www/html/index.html', 'Hello! It\'s working!'),
+  ]),
 });
 ```
 
@@ -1643,7 +1711,9 @@ The following demonstrates how to create a launch template with an Amazon Machin
 declare const vpc: ec2.Vpc;
 
 const template = new ec2.LaunchTemplate(this, 'LaunchTemplate', {
-  machineImage: ec2.MachineImage.latestAmazonLinux(),
+  machineImage: ec2.MachineImage.latestAmazonLinux({
+    generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2,
+  }),
   securityGroup: new ec2.SecurityGroup(this, 'LaunchTemplateSG', {
     vpc: vpc,
   }),
@@ -1673,7 +1743,42 @@ declare const instanceType: ec2.InstanceType;
 new ec2.Instance(this, 'Instance1', {
   vpc,
   instanceType,
-  machineImage: new ec2.AmazonLinuxImage(),
+  machineImage: ec2.MachineImage.latestAmazonLinux(),
   detailedMonitoring: true,
+});
+```
+
+## Connecting to your instances using SSM Session Manager
+
+SSM Session Manager makes it possible to connect to your instances from the
+AWS Console, without preparing SSH keys.
+
+To do so, you need to:
+
+* Use an image with [SSM agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/ssm-agent.html) installed
+  and configured. [Many images come with SSM Agent
+  preinstalled](https://docs.aws.amazon.com/systems-manager/latest/userguide/ami-preinstalled-agent.html), otherwise you
+  may need to manually put instructions to [install SSM
+  Agent](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-manual-agent-install.html) into your
+  instance's UserData or use EC2 Init).
+* Create the instance with `ssmSessionPermissions: true`.
+
+If these conditions are met, you can connect to the instance from the EC2 Console. Example:
+
+```ts
+declare const vpc: ec2.Vpc;
+declare const instanceType: ec2.InstanceType;
+
+new ec2.Instance(this, 'Instance1', {
+  vpc,
+  instanceType,
+
+  // Amazon Linux 2 comes with SSM Agent by default
+  machineImage: ec2.MachineImage.latestAmazonLinux({
+    generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2,
+  }),
+
+  // Turn on SSM
+  ssmSessionPermissions: true,
 });
 ```

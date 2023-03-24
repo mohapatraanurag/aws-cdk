@@ -152,7 +152,7 @@ export interface BucketDeploymentProps {
    * @default - No user metadata is set
    * @see https://docs.aws.amazon.com/AmazonS3/latest/dev/UsingMetadata.html#UserMetadata
    */
-  readonly metadata?: UserDefinedObjectMetadata;
+  readonly metadata?: { [key: string]: string };
 
   /**
    * System-defined cache-control metadata to be set on all objects in the deployment.
@@ -253,6 +253,7 @@ export class BucketDeployment extends Construct {
   private readonly cr: cdk.CustomResource;
   private _deployedBucket?: s3.IBucket;
   private requestDestinationArn: boolean = false;
+  private readonly destinationBucket: s3.IBucket;
   private readonly sources: SourceConfig[];
   private readonly handlerRole: iam.IRole;
 
@@ -273,6 +274,8 @@ export class BucketDeployment extends Construct {
     if (props.useEfs && !props.vpc) {
       throw new Error('Vpc must be specified if useEfs is set');
     }
+
+    this.destinationBucket = props.destinationBucket;
 
     const accessPointPath = '/lambda';
     let accessPoint;
@@ -333,9 +336,9 @@ export class BucketDeployment extends Construct {
 
     this.sources = props.sources.map((source: ISource) => source.bind(this, { handlerRole: this.handlerRole }));
 
-    props.destinationBucket.grantReadWrite(handler);
+    this.destinationBucket.grantReadWrite(handler);
     if (props.accessControl) {
-      props.destinationBucket.grantPutAcl(handler);
+      this.destinationBucket.grantPutAcl(handler);
     }
     if (props.distribution) {
       handler.addToRolePolicy(new iam.PolicyStatement({
@@ -369,12 +372,16 @@ export class BucketDeployment extends Construct {
             return this.sources.reduce((acc, source) => {
               if (source.markers) {
                 acc.push(source.markers);
+                // if there are more than 1 source, then all sources
+                // require markers (custom resource will throw an error otherwise)
+              } else if (this.sources.length > 1) {
+                acc.push({});
               }
               return acc;
             }, [] as Array<Record<string, any>>);
           },
         }, { omitEmptyArray: true }),
-        DestinationBucketName: props.destinationBucket.bucketName,
+        DestinationBucketName: this.destinationBucket.bucketName,
         DestinationBucketKeyPrefix: props.destinationKeyPrefix,
         RetainOnDelete: props.retainOnDelete,
         Extract: props.extract,
@@ -385,8 +392,8 @@ export class BucketDeployment extends Construct {
         SystemMetadata: mapSystemMetadata(props),
         DistributionId: props.distribution?.distributionId,
         DistributionPaths: props.distributionPaths,
-        // Passing through the ARN sequences dependencees on the deployment
-        DestinationBucketArn: cdk.Lazy.string({ produce: () => this.requestDestinationArn ? props.destinationBucket.bucketArn : undefined }),
+        // Passing through the ARN sequences dependency on the deployment
+        DestinationBucketArn: cdk.Lazy.string({ produce: () => this.requestDestinationArn ? this.destinationBucket.bucketArn : undefined }),
       },
     });
 
@@ -443,7 +450,7 @@ export class BucketDeployment extends Construct {
      * want the contents of the bucket to be removed on bucket deletion, then `autoDeleteObjects` property should
      * be set to true on the Bucket.
      */
-    cdk.Tags.of(props.destinationBucket).add(tagKey, 'true');
+    cdk.Tags.of(this.destinationBucket).add(tagKey, 'true');
 
   }
 
@@ -454,11 +461,18 @@ export class BucketDeployment extends Construct {
    * bucket deployment has happened before the next operation is started, pass the other construct
    * a reference to `deployment.deployedBucket`.
    *
-   * Doing this replaces calling `otherResource.node.addDependency(deployment)`.
+   * Note that this only returns an immutable reference to the destination bucket.
+   * If sequenced access to the original destination bucket is required, you may add a dependency
+   * on the bucket deployment instead: `otherResource.node.addDependency(deployment)`
    */
   public get deployedBucket(): s3.IBucket {
     this.requestDestinationArn = true;
-    this._deployedBucket = this._deployedBucket ?? s3.Bucket.fromBucketArn(this, 'DestinationBucket', cdk.Token.asString(this.cr.getAtt('DestinationBucketArn')));
+    this._deployedBucket = this._deployedBucket ?? s3.Bucket.fromBucketAttributes(this, 'DestinationBucket', {
+      bucketArn: cdk.Token.asString(this.cr.getAtt('DestinationBucketArn')),
+      region: this.destinationBucket.env.region,
+      account: this.destinationBucket.env.account,
+      isWebsite: this.destinationBucket.isWebsite,
+    });
     return this._deployedBucket;
   }
 
@@ -553,10 +567,14 @@ export class BucketDeployment extends Construct {
 }
 
 /**
- * Metadata
+ * Metadata.
+ *
+ * The `x-amz-meta-` prefix will automatically be added to keys.
+ *
+ * @see https://docs.aws.amazon.com/AmazonS3/latest/dev/UsingMetadata.html#UserMetadata
  */
 
-function mapUserMetadata(metadata: UserDefinedObjectMetadata) {
+function mapUserMetadata(metadata: { [key: string]: string }) {
   const mapKey = (key: string) => key.toLowerCase();
 
   return Object.keys(metadata).reduce((o, key) => ({ ...o, [mapKey(key)]: metadata[key] }), {});
@@ -740,12 +758,19 @@ export class Expires {
 
 /**
  * Custom user defined metadata.
+ *
+ * @deprecated Use raw property bags instead (object literals, `Map<String,Object>`, etc... )
  */
 export interface UserDefinedObjectMetadata {
   /**
    * Arbitrary metadata key-values
    * The `x-amz-meta-` prefix will automatically be added to keys.
+   *
    * @see https://docs.aws.amazon.com/AmazonS3/latest/dev/UsingMetadata.html#UserMetadata
+   *
+   * This index signature is not usable in non-TypeScript/JavaScript languages.
+   *
+   * @jsii ignore
    */
   readonly [key: string]: string;
 }

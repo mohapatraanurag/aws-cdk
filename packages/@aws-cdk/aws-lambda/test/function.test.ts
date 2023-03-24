@@ -17,9 +17,11 @@ import * as cxapi from '@aws-cdk/cx-api';
 import * as constructs from 'constructs';
 import * as _ from 'lodash';
 import * as lambda from '../lib';
+import { AdotLambdaLayerJavaSdkVersion } from '../lib/adot-layers';
 import { calculateFunctionHash } from '../lib/function-hash';
 
 describe('function', () => {
+  const dockerLambdaHandlerPath = path.join(__dirname, 'docker-lambda-handler');
   test('default function', () => {
     const stack = new cdk.Stack();
 
@@ -1210,7 +1212,7 @@ describe('function', () => {
     const stack = new cdk.Stack();
 
     new lambda.Function(stack, 'MyLambda', {
-      code: lambda.Code.fromAssetImage(path.join(__dirname, 'docker-lambda-handler')),
+      code: lambda.Code.fromAssetImage(dockerLambdaHandlerPath),
       handler: lambda.Handler.FROM_IMAGE,
       runtime: lambda.Runtime.FROM_IMAGE,
     });
@@ -2621,13 +2623,13 @@ describe('function', () => {
       const stack = new cdk.Stack();
 
       expect(() => new lambda.Function(stack, 'Fn1', {
-        code: lambda.Code.fromAssetImage('test/docker-lambda-handler'),
+        code: lambda.Code.fromAssetImage(dockerLambdaHandlerPath),
         handler: lambda.Handler.FROM_IMAGE,
         runtime: lambda.Runtime.FROM_IMAGE,
       })).not.toThrow();
 
       expect(() => new lambda.Function(stack, 'Fn2', {
-        code: lambda.Code.fromAssetImage('test/docker-lambda-handler'),
+        code: lambda.Code.fromAssetImage(dockerLambdaHandlerPath),
         handler: 'index.handler',
         runtime: lambda.Runtime.FROM_IMAGE,
       })).toThrow(/handler must be.*FROM_IMAGE/);
@@ -2637,13 +2639,13 @@ describe('function', () => {
       const stack = new cdk.Stack();
 
       expect(() => new lambda.Function(stack, 'Fn1', {
-        code: lambda.Code.fromAssetImage('test/docker-lambda-handler'),
+        code: lambda.Code.fromAssetImage(dockerLambdaHandlerPath),
         handler: lambda.Handler.FROM_IMAGE,
         runtime: lambda.Runtime.FROM_IMAGE,
       })).not.toThrow();
 
       expect(() => new lambda.Function(stack, 'Fn2', {
-        code: lambda.Code.fromAssetImage('test/docker-lambda-handler'),
+        code: lambda.Code.fromAssetImage(dockerLambdaHandlerPath),
         handler: lambda.Handler.FROM_IMAGE,
         runtime: lambda.Runtime.GO_1_X,
       })).toThrow(/runtime must be.*FROM_IMAGE/);
@@ -2736,7 +2738,7 @@ describe('function', () => {
     });
 
     expect(() => new lambda.DockerImageFunction(stack, 'MyLambda', {
-      code: lambda.DockerImageCode.fromImageAsset(path.join(__dirname, 'docker-lambda-handler')),
+      code: lambda.DockerImageCode.fromImageAsset(dockerLambdaHandlerPath),
       layers: [layer],
     })).toThrow(/Layers are not supported for container image functions/);
   });
@@ -3046,29 +3048,53 @@ describe('function', () => {
     });
   });
 
-  test('Generates a version when currentVersionOptions is set', () => {
-    const stack = new cdk.Stack();
+  test('adds ADOT instrumentation to a ZIP Lambda function', () => {
+    // GIVEN
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'Base', {
+      env: { account: '111111111111', region: 'us-west-2' },
+    });
 
+    // WHEN
     new lambda.Function(stack, 'MyLambda', {
       code: new lambda.InlineCode('foo'),
       handler: 'index.handler',
       runtime: lambda.Runtime.NODEJS_14_X,
-      currentVersionOptions: {
-        provisionedConcurrentExecutions: 3,
+      adotInstrumentation: {
+        layerVersion: lambda.AdotLayerVersion.fromJavaSdkLayerVersion(AdotLambdaLayerJavaSdkVersion.V1_19_0),
+        execWrapper: lambda.AdotLambdaExecWrapper.REGULAR_HANDLER,
       },
     });
 
-    Template.fromStack(stack).hasResourceProperties('AWS::Lambda::Version', {
-      ProvisionedConcurrencyConfig: {
-        ProvisionedConcurrentExecutions: 3,
-      },
-    });
-
+    // THEN
     Template.fromStack(stack).hasResourceProperties('AWS::Lambda::Function', {
-      Code: { ZipFile: 'foo' },
-      Handler: 'index.handler',
-      Runtime: 'nodejs14.x',
+      Layers: ['arn:aws:lambda:us-west-2:901920570463:layer:aws-otel-java-wrapper-amd64-ver-1-19-0:1'],
+      Environment: {
+        Variables: {
+          AWS_LAMBDA_EXEC_WRAPPER: '/opt/otel-handler',
+        },
+      },
     });
+  });
+
+  test('adds ADOT instrumentation to a container image Lambda function', () => {
+    // GIVEN
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'Base', {
+      env: { account: '111111111111', region: 'us-west-2' },
+    });
+
+    // WHEN
+    expect(
+      () =>
+        new lambda.DockerImageFunction(stack, 'MyLambda', {
+          code: lambda.DockerImageCode.fromImageAsset(dockerLambdaHandlerPath),
+          adotInstrumentation: {
+            layerVersion: lambda.AdotLayerVersion.fromJavaSdkLayerVersion(AdotLambdaLayerJavaSdkVersion.V1_19_0),
+            execWrapper: lambda.AdotLambdaExecWrapper.REGULAR_HANDLER,
+          },
+        }),
+    ).toThrow(/ADOT Lambda layer can't be configured with container image package type/);
   });
 });
 
