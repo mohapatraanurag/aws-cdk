@@ -316,7 +316,7 @@ const queueProcessingFargateService = new ecsPatterns.QueueProcessingFargateServ
 });
 ```
 
-If the CPU based scaling is required, To specify a custom target CPU utilization percentage for the scaling strategy use the  `cpuTrgetUtilizationPercent` property
+To specify a custom target CPU utilization percentage for the scaling strategy use the  `cpuTrgetUtilizationPercent` property
 
 ```ts
 declare const cluster: ecs.Cluster;
@@ -327,10 +327,7 @@ const queueProcessingFargateService = new ecsPatterns.QueueProcessingFargateServ
   command: ["-c", "4", "amazon.com"],
   enableLogging: false,
   desiredTaskCount: 2,
-  environment: {
-    TEST_ENVIRONMENT_VARIABLE1: "test environment variable 1 value",
-    TEST_ENVIRONMENT_VARIABLE2: "test environment variable 2 value",
-  },
+  environment: {},
   maxScalingCapacity: 5,
   containerName: 'test',
   cpuTrgetUtilizationPercent: 90,
